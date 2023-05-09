@@ -36,17 +36,32 @@
 	void OSCleanup( void ) {}
 #endif
 
+// ******************* //
+// additional librarys for windows// --> also need to work in linux --> RPI3
+// ******************* //
 
 #include <string.h>
-#include <curl.h> 		// --> install library
+#include <pthread.h>
+//#include "curl/curl.h" 		// --> install library
 #include <jansson.h>	// --> install library
 
-#define API_URL "http://ip-api.com/json/"
+// *************** //
+// constant values //
+// *************** //
 
+#define API_URL "http://ip-api.com/json/"
 #define filename "output.csv"
 
+// **************** //
+// global variables // 
+// **************** //
+
+char IP_LOOKUP[1000];
 int fileBusy = 0;
 
+// ******************** //
+// initialize functions //
+// ******************** //
 
 int initialization();
 int connection( int internet_socket );
@@ -56,17 +71,26 @@ static size_t writeMemoryCallback(void *contents, size_t size, size_t nmemb, voi
 char** getLocationData(char* ipAddress);
 void delay(int number_of_seconds);
 
+// ********************* //
+// additional data types //
+// ********************* //
+
 typedef struct {
     char *data;
     size_t size;
 } MemoryChunk;
 
-int main( int argc, char * argv[] )
+int main( int argc, char * argv[] ) // should keep running for a long time ** at least multiple days ** 
 {
+
+	// read lookup data and put it in ARRAY
 
 	OSInit();
 
-	// for every connection
+	// limit max request to 45/min
+
+
+	// make thread for every connection
 		int internet_socket = initialization();
 
 		int client_internet_socket = connection( internet_socket );
@@ -74,7 +98,7 @@ int main( int argc, char * argv[] )
 		execution( client_internet_socket );
 
 		cleanup( internet_socket, client_internet_socket );
-
+		// close thread if connection has been closed and data has been written
 
 	OSCleanup();
 
@@ -162,7 +186,26 @@ int connection( int internet_socket )
 
 void execution( int internet_socket )
 {
+	// get current time
+	time_t seconds;
+    seconds = time(NULL);
+
 	// get IP adress
+
+
+	// ************************ //
+	// Get info via geolocation //
+	// ************************ //
+
+	char outputText[1000];
+
+	char** locationData = getLocationData(client_internet_address);					// get location data
+
+    if (locationData == NULL) 														// check if locationData is correct
+    {
+        fprintf(stderr, "Failed to retrieve location data\n");						// send error
+    }
+
 
 	// ***************************** //
 	// keep sending data to attacker //
@@ -170,45 +213,43 @@ void execution( int internet_socket )
 
 	int number_of_bytes_send = 0;
 	int total_bytes_send = 0;
+	char message[1000] = "(";
 
-	while(number_of_bytes_send > 0) 											// loop until error
+	strcat(message, locationData[6]);
+	strcat(message, ";");
+	strcat(message, locationData[7]);
+	strcat(message, ")");
+
+
+	while(number_of_bytes_send > 0) 												// loop until error
 	{
-		number_of_bytes_send = send( internet_socket, message, 16, 0 );			// send data
-		total_bytes_send += number_of_bytes_send;								// add current bytes send to total bytes send
+		number_of_bytes_send = send( internet_socket, message, 16, 0 );				// send data
+
+		total_bytes_send += number_of_bytes_send;									// add current bytes send to total bytes send
 	}
 
-	// *********************** //
-	// Get info via geolocatio //
-	// *********************** //
-
-	char outputText[];
-
-	char** locationData = getLocationData(client_internet_address);				// get location data
-    if (locationData == NULL) 													// check if locationData is correct
-    {
-        fprintf(stderr, "Failed to retrieve location data\n");
-    }
-
+	
     // ********************************* //
 	// print info to buffer then to file //
 	// ********************************* //
 
-	while(fileBusy == 1) 														// wait for file to be not busy
-	{
-		delay(1); 																// delay 1 second before trying again
-	}
+	outputText = dataConverter(locationData, total_bytes_send, seconds);			// convert data to readable format
 
-	writeToFile(outputText); 													// print buffer in output file
+	while(fileBusy == 1) 															// wait for file to be not busy
+	{
+		delay(1); 																	// delay 1 second before trying again
+	}
+	writeToFile(outputText); 														// print buffer in output file
 }
 
 int writeToFile(char* buffer[1000])
 {
-	fileBusy = 1; 					// file = busy
+	fileBusy = 1; 																// file = busy
 	FILE *fp;
-	fp = fopen (filename, "a");		// open file in append mode
-	fprintf(fp, buffer);			// append buffer to file
-    fclose(fp);						// close file
-    fileBusy = 0; 					// file = not busy
+	fp = fopen (filename, "a");													// open file in append mode
+	fprintf(fp, buffer);														// append buffer to file
+    fclose(fp);																	// close file
+    fileBusy = 0; 																// file = not busy
 }
 
 void cleanup( int internet_socket, int client_internet_socket )
@@ -243,49 +284,17 @@ static size_t writeMemoryCallback(void *contents, size_t size, size_t nmemb, voi
 
 char** getLocationData(char* ipAddress) 
 {
-    CURL *curl = curl_easy_init();
-    if (!curl) {
-        fprintf(stderr, "Failed to initialize CURL\n");
-        return NULL;
-    }
-
-    char url[256];
-    snprintf(url, sizeof(url), "%s%s", API_URL, ipAddress);
-
-    MemoryChunk chunk = {NULL, 0};
-    curl_easy_setopt(curl, CURLOPT_URL, url);
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writeMemoryCallback);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void *)&chunk);
-    CURLcode res = curl_easy_perform(curl);
-    if (res != CURLE_OK) {
-        fprintf(stderr, "Failed to perform HTTP request: %s\n", curl_easy_strerror(res));
-        curl_easy_cleanup(curl);
-        return NULL;
-    }
-
-    curl_easy_cleanup(curl);
-
-    json_error_t error;
-    json_t *root = json_loads(chunk.data, 0, &error);
-    if (!root) {
-        fprintf(stderr, "Failed to parse JSON: %s\n", error.text);
-        free(chunk.data);
-        return NULL;
-    }
-
-    const char *status = json_string_value(json_object_get(root, "status"));
-    if (strcmp(status, "success") != 0) {
-        fprintf(stderr, "Failed to retrieve location information\n");
-        json_decref(root);
-        free(chunk.data);
-        return NULL;
-    }
+	// get location data
 
     char** locationData = (char**) malloc(4 * sizeof(char*));
-    locationData[0] = strdup(json_string_value(json_object_get(root, "country")));
-    locationData[1] = strdup(json_string_value(json_object_get(root, "regionName")));
-    locationData[2] = strdup(json_string_value(json_object_get(root, "city")));
-    locationData[3] = strdup(json_string_value(json_object_get(root, "zip")));
+    locationData[0] = strdup(json_string_value(json_object_get(root, "country"		)));
+    locationData[1] = strdup(json_string_value(json_object_get(root, "regionName"	)));
+    locationData[2] = strdup(json_string_value(json_object_get(root, "city"			)));
+    locationData[3] = strdup(json_string_value(json_object_get(root, "zip"			)));
+    locationData[4] = strdup(json_string_value(json_object_get(root, "query"		)));
+    locationData[5] = strdup(json_string_value(json_object_get(root, "org"			)));
+    locationData[6] = strdup(json_string_value(json_object_get(root, "lat"			)));
+    locationData[7] = strdup(json_string_value(json_object_get(root, "lon"			)));
 
     json_decref(root);
     free(chunk.data);
@@ -294,14 +303,60 @@ char** getLocationData(char* ipAddress)
 }
 
 void delay(int number_of_seconds)
+{   
+    int milli_seconds = 1000 * number_of_seconds;		// Converting time into milli_seconds 
+
+    clock_t start_time = clock();						// Storing start time
+
+    while (clock() < start_time + milli_seconds){;}		// looping till required time is not achieved
+}
+
+char dataConverter(char** locationData, int dataSent, time_t time) 					// **TODO** add readAttempt variable to func **TODO**
 {
-    // Converting time into milli_seconds
-    int milli_seconds = 1000 * number_of_seconds;
- 
-    // Storing start time
-    clock_t start_time = clock();
- 
-    // looping till required time is not achieved
-    while (clock() < start_time + milli_seconds)
-        ;
+																					// format: Time;IP;DataAmount;Country;region;City;ZIP;Org;RepeatAttempt -> CSV file
+	char temp[100];
+	char output[100];
+
+	strftime(temp, 1000, "%Y-%m-%d %H:%M:%S", localtime(&time)); 					// convert int seconds to "Y-M-D-H-M-S"
+	char data_time = strcat(time_string, ";");										// convert "Y-M-D-H-M-S" to "Y-M-D-H-M-S;"
+
+	char data_ip = strcat(locationData[4], ";"); 									// convert "IP" to "IP;"
+
+	sprintf(temp, "%i", checkRepeatAttempt(locationData[4]));						// convert int repeatAttempt to "bool"
+	char data_repeat = strcat(temp, ";\n");											// convert "bool" to "bool;"
+
+	strcat(output, data_time);														// add time to output string
+	strcat(output, data_ip);														// add ip to output string
+	// ...
+	strcat(output, data_repeat);													// add repeatAttempt to output string + \n to go to next line
+}
+
+int checkRepeatAttempt(char ip)
+{
+	int ip_size = 0;																// **TODO** fill in ip size **TODO**
+	int cntr = 0;																	// counter to count each IP in lookup table
+
+	while(true)
+	{
+		temp[100]; 																	// temporary holds each value of lookup table
+
+		if(IP_LOOKUP[cntr] == NULL)													// if lookup is empty return "no match found" = 0
+		{
+			return 0;
+			break;
+		}
+
+		for (int i = 0 ; i != ip_size ; i++)										// loop over every character
+		{
+        	temp = strcat(temp, IP_LOOKUP[cntr * ip_size + i]) 						// add character to temp string
+    	}
+
+    	if(strcmp(temp,ip) == 0) 													// if item in list == ip return "match found" = 1
+    	{
+    		return 1;
+    		break;
+    	}
+		
+
+	}
 }
