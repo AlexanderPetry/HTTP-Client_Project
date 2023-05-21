@@ -42,47 +42,69 @@
 
 // gcc  try-nr10.c -l ws2_32 -o test.exe -lwininet
 
+#define API_URL_FORMAT "http://ip-api.com/json/%s"
+#define filename "output.csv"
+#define MAX_JSON_LENGTH 2048
+#define MAX_STRING_LENGTH 256
+#define MAX_ARRAY_SIZE 14
 
 int initialization();
 int connection( int internet_socket );
-void execution( int internet_socket );
 void cleanup( int internet_socket, int client_internet_socket );
 void printAddressInfo(struct addrinfo *addressInfo);
 void getPublicIPAddress();
+DWORD WINAPI ClientThread(LPVOID lpParam);
+char* getLocationData(char* ipAddress);
+void formatBytes(int bytes);
+int writeToFile(char buffer[1000]);
+void delay(int number_of_seconds);
+void formatJsonToArray(const char *json, char **array);
+
 
 char client_ip;
 char server_ip;
+int fileBusy = 0;
 
 int main( int argc, char * argv[] )
 {
-	//////////////////
-	//Initialization//
-	//////////////////
-	 getPublicIPAddress();
+	WSADATA wsaData;
+	HANDLE threadHandle;
+	getPublicIPAddress();
 
 
 	OSInit();
 
 	int internet_socket = initialization();
+	int threadcounter = 0;
 
-	//////////////
-	//Connection//
-	//////////////
+	while(1){
+		int client_internet_socket = connection( internet_socket );
+		threadcounter++;
+		printf("thread count: %i\n",threadcounter);
+		threadHandle = CreateThread(NULL, 0, ClientThread, (LPVOID)&client_internet_socket, 0, NULL);
+		//printf("test 1 \n");
 
-	int client_internet_socket = connection( internet_socket );
+		if (threadHandle == NULL) {
+			//printf("test 2 \n");
+            printf("Failed to create client thread.\n");
+            closesocket(client_internet_socket);
+            threadcounter--;
+        } 
+        else 
+        {
+        	//printf("test 3 \n");
+            // Detach the thread so it can continue executing independently
+            CloseHandle(&client_internet_socket);
+            threadcounter--;
+        }
+	}
+	
 
-	/////////////
-	//Execution//
-	/////////////
-
-	execution( client_internet_socket );
+	//execution( client_internet_socket );
 
 
-	////////////
-	//Clean up//
-	////////////
 
-	cleanup( internet_socket, client_internet_socket );
+	//cleanup( internet_socket, client_internet_socket );
 
 	OSCleanup();
 
@@ -177,34 +199,10 @@ int connection( int internet_socket )
 		close( internet_socket );
 		exit( 3 );
 	}
-	printf("connection on: %i\n", client_internet_address);
+	//printf("connection on: %i\n", client_internet_address);
 	return client_socket;
 }
 
-void execution( int internet_socket )
-{
-	//Step 3.1
-	int number_of_bytes_received = 0;
-	char buffer[1000];
-	number_of_bytes_received = recv( internet_socket, buffer, ( sizeof buffer ) - 1, 0 );
-	if( number_of_bytes_received == -1 )
-	{
-		perror( "recv" );
-	}
-	else
-	{
-		buffer[number_of_bytes_received] = '\0';
-		printf( "Received : %s\n", buffer );
-	}
-
-	//Step 3.2
-	int number_of_bytes_send = 0;
-	number_of_bytes_send = send( internet_socket, "Hello TCP world!", 16, 0 );
-	if( number_of_bytes_send == -1 )
-	{
-		perror( "send" );
-	}
-}
 
 void cleanup( int internet_socket, int client_internet_socket )
 {
@@ -288,3 +286,197 @@ void getPublicIPAddress() {
     InternetCloseHandle(hInternet);
 }
 
+
+DWORD WINAPI ClientThread(LPVOID lpParam) {
+
+	//printf("thread created\n");
+    SOCKET clientSocket = *(SOCKET*)lpParam;
+    //printf("clientSocket: %i\n", clientSocket);
+    char buffer[1024];
+    int bytesRead;
+
+    struct sockaddr_in clientAddr;
+    int clientAddrLen = sizeof(clientAddr);
+    getpeername(clientSocket, (struct sockaddr*)&clientAddr, &clientAddrLen);
+    char* clientIP = inet_ntoa(clientAddr.sin_addr);
+    printf("Client connected: %s\n", clientIP);
+
+	const char *json = getLocationData(clientIP);
+    char *array[MAX_ARRAY_SIZE];
+    formatJsonToArray(json, array);
+
+    printf("%s\n", array[0]);
+    printf("%s\n", array[1]);
+    printf("%s\n", array[2]);
+
+   	int number_of_bytes_send = 10;
+	int total_bytes_send = 0;
+	int counter = 0;
+
+	printf("sending Data: ");
+
+	while(number_of_bytes_send > 0) 												// loop until error
+	{
+		number_of_bytes_send = send( clientSocket, clientIP, 16, 0 );				// send data
+		total_bytes_send += number_of_bytes_send;									// add current bytes send to total bytes send
+		if(counter > 16384)
+		{
+			printf(".");
+			counter = 0;
+		}
+		else
+		{
+			counter++;
+		}
+	}
+
+	printf("\n");
+	formatBytes(total_bytes_send);
+	printf("\n");
+
+	//printf("wait for file to be not busy\n");
+	//printf(array[0]);
+	while(fileBusy == 1) 															// wait for file to be not busy
+	{
+		delay(1); 																	// delay 1 second before trying again
+	}
+
+	char temp[1000];
+	char text[1000];
+	sprintf(temp, "%i", total_bytes_send);
+
+	if(strcmp(array[0], "\"status\":\"fail\"") == 0)
+	{
+		strcat(text,clientIP);
+		strcat(text, ";");
+		strcat(text, "fail;");
+		strcat(text, temp);
+		strcat(text, "\n");
+		writeToFile(text);
+	}
+	else
+	{
+		printf("adding data to output array\n");
+		for (int i = 0; i < MAX_ARRAY_SIZE && array[i] != NULL; i++) {
+			if(array[i] == NULL)
+			{
+				break;
+			}
+	        strcat(text, array[i]);
+			strcat(text, ";");
+	    }
+		strcat(text, temp);
+		strcat(text, "\n");
+		printf("printing to file\n");
+		writeToFile(text);
+		printf("file printed\n");
+	}	
+
+	printf("closing socket\n");
+   	closesocket(clientSocket);
+	  
+    return 0;
+}
+
+char* getLocationData(char* ipAddress) 
+{
+    HINTERNET hInternet, hConnect;
+    DWORD bytesRead;
+    char buffer[2048];
+
+    // Format the API URL with the provided IP address
+    char apiUrl[2048];
+    snprintf(apiUrl, 2048, API_URL_FORMAT, ipAddress);
+
+    hInternet = InternetOpenA("IPAPI Client", INTERNET_OPEN_TYPE_DIRECT, NULL, NULL, 0);
+    if (hInternet == NULL) {
+        printf("Failed to initialize WinINet.\n");
+        return NULL;
+    }
+
+    hConnect = InternetOpenUrlA(hInternet, apiUrl, NULL, 0, INTERNET_FLAG_RELOAD, 0);
+    if (hConnect == NULL) {
+        printf("Failed to open URL: %d\n", GetLastError());
+        InternetCloseHandle(hInternet);
+        return NULL;
+    }
+
+    char* data = NULL;
+    size_t dataSize = 0;
+
+    while (InternetReadFile(hConnect, buffer, sizeof(buffer) - 1, &bytesRead) && bytesRead > 0) {
+        buffer[bytesRead] = '\0';
+
+        // Resize the data buffer and append the received data
+        char* newData = realloc(data, dataSize + bytesRead + 1);
+        if (newData == NULL) {
+            printf("Failed to allocate memory.\n");
+            free(data);
+            InternetCloseHandle(hConnect);
+            InternetCloseHandle(hInternet);
+            return NULL;
+        }
+
+        data = newData;
+        memcpy(data + dataSize, buffer, bytesRead);
+        dataSize += bytesRead;
+        data[dataSize] = '\0';
+    }
+
+    InternetCloseHandle(hConnect);
+    InternetCloseHandle(hInternet);
+
+    return data;
+}
+
+void formatBytes(int bytes) {
+    double size = bytes;
+    const char* units[] = {"bytes", "KB", "MB", "GB"};
+
+    int unitIndex = 0;
+    while (size >= 1024 && unitIndex < 3) {
+        size /= 1024;
+        unitIndex++;
+    }
+
+    printf("Amount of bytes send: %.2f %s\n", size, units[unitIndex]);
+}
+
+int writeToFile(char buffer[1000])
+{
+	fileBusy = 1; 																// file = busy
+	printf("file status: busy\n");
+	FILE *fp;
+	fp = fopen (filename, "a");													// open file in append mode
+	fprintf(fp, buffer);														// append buffer to file
+    fclose(fp);																	// close file
+    fileBusy = 0; 																// file = not busy
+    printf("file status: not busy\n");
+}
+
+void delay(int number_of_seconds)
+{   
+    sleep(number_of_seconds);								
+}
+
+void formatJsonToArray(const char *json, char **array) {
+    char tempJson[MAX_JSON_LENGTH];
+    strcpy(tempJson, json);
+
+    // Remove leading and trailing curly braces
+    char *start = strchr(tempJson, '{');
+    char *end = strrchr(tempJson, '}');
+    if (start && end) {
+        start++;
+        *end = '\0';
+    }
+
+    // Split key-value pairs into array elements
+    int index = 0;
+    char *pair = strtok(start, ",");
+    while (pair != NULL && index < MAX_ARRAY_SIZE) {
+        array[index] = pair;
+        pair = strtok(NULL, ",");
+        index++;
+    }
+}

@@ -6,9 +6,6 @@
 	#include <unistd.h> //for close
 	#include <stdlib.h> //for exit
 	#include <string.h> //for memset
-	#include <Wininet.h>
-	#include <windows.h>
-	#pragma comment(lib, "ws2_32.lib")
 	void OSInit( void )
 	{
 		WSADATA wsaData;
@@ -39,99 +36,75 @@
 	void OSCleanup( void ) {}
 #endif
 
-// ******************* //
-// additional librarys for windows// --> also need to work in linux --> RPI3
-// ******************* //
+#include <ws2tcpip.h>
+#include <Windows.h>
+#include <WinInet.h>
 
-#include <string.h>
-//#include <pthread.h>
-//#include <curl/curl.h>		// --> install library
-//#include <jansson.h>	// --> install library
-#include <stdlib.h>
-//#include <arpa/inet.h>
-
-// *************** //
-// constant values //
-// *************** //
+// gcc  try-nr10.c -l ws2_32 -o test.exe -lwininet
 
 #define API_URL_FORMAT "http://ip-api.com/json/%s"
-#define BUFFER_SIZE 4096
 #define filename "output.csv"
-
-// **************** //
-// global variables // 
-// **************** //
-
-char IP_LOOKUP[1000];
-int fileBusy = 0;
-
-
-// gcc -I"C:\curl\include" HTTP-Client.c -l ws2_32 -o net.exe -ljansson
-// gcc  HTTP-Client.c -l ws2_32 -o net.exe -lwininet
-
-
-// ******************** //
-// initialize functions //
-// ******************** //
+#define MAX_JSON_LENGTH 2048
+#define MAX_STRING_LENGTH 256
+#define MAX_ARRAY_SIZE 14
 
 int initialization();
 int connection( int internet_socket );
-void execution( int internet_socket , char* ipStr);
 void cleanup( int internet_socket, int client_internet_socket );
-static size_t writeMemoryCallback(void *contents, size_t size, size_t nmemb, void *userp);
-char* getLocationData(char* ipAddress);
-void delay(int number_of_seconds);
+void printAddressInfo(struct addrinfo *addressInfo);
+void getPublicIPAddress();
 DWORD WINAPI ClientThread(LPVOID lpParam);
-void printIpAddress(const struct sockaddr *sa);
-//char printIP(const struct sockaddr_storage* addr);
+char* getLocationData(char* ipAddress);
+void formatBytes(int bytes);
+int writeToFile(char buffer[1000]);
+void delay(int number_of_seconds);
+void formatJsonToArray(const char *json, char **array);
 
-// ********************* //
-// additional data types //
-// ********************* //
 
-typedef struct {
-    char *data;
-    size_t size;
-} MemoryChunk;
+char client_ip;
+char server_ip;
+int fileBusy = 0;
 
-int main( int argc, char * argv[] ) // should keep running for a long time ** at least multiple days ** 
+int main( int argc, char * argv[] )
 {
 	WSADATA wsaData;
 	HANDLE threadHandle;
-	// read lookup data and put it in ARRAY
+	getPublicIPAddress();
+
 
 	OSInit();
 
-	// limit max request to 45/min
-
 	int internet_socket = initialization();
+	int threadcounter = 0;
 
-	// make thread for every connection
-	while(1)
-	{
-		char ipStr[INET6_ADDRSTRLEN];
-
-		int client_internet_socket = connection( internet_socket ); // accept connection + print ip
-
+	while(1){
+		int client_internet_socket = connection( internet_socket );
+		threadcounter++;
+		printf("thread count: %i\n",threadcounter);
 		threadHandle = CreateThread(NULL, 0, ClientThread, (LPVOID)&client_internet_socket, 0, NULL);
-
-		printf("test 1 \n");
+		//printf("test 1 \n");
 
 		if (threadHandle == NULL) {
-			printf("test 2 \n");
+			//printf("test 2 \n");
             printf("Failed to create client thread.\n");
             closesocket(client_internet_socket);
+            threadcounter--;
         } 
         else 
         {
-        	printf("test 3 \n");
+        	//printf("test 3 \n");
             // Detach the thread so it can continue executing independently
             CloseHandle(&client_internet_socket);
+            threadcounter--;
         }
+	}
+	
 
-		//execution( client_internet_socket , ipStr);
+	//execution( client_internet_socket );
 
-	}	
+
+
+	//cleanup( internet_socket, client_internet_socket );
 
 	OSCleanup();
 
@@ -140,32 +113,31 @@ int main( int argc, char * argv[] ) // should keep running for a long time ** at
 
 int initialization()
 {
-	//Step 1.1
-	struct addrinfo internet_address_setup;
-	struct addrinfo * internet_address_result;
-	memset( &internet_address_setup, 0, sizeof internet_address_setup );
-	internet_address_setup.ai_family = AF_UNSPEC;
-	internet_address_setup.ai_socktype = SOCK_STREAM;
-	internet_address_setup.ai_flags = AI_PASSIVE;
-	int getaddrinfo_return = getaddrinfo( NULL, "22", &internet_address_setup, &internet_address_result );
-	if( getaddrinfo_return != 0 )
-	{
-		fprintf( stderr, "getaddrinfo: %s\n", gai_strerror( getaddrinfo_return ) );
-		exit( 1 );
-	}
+    //Step 1.1
+    struct addrinfo internet_address_setup;
+    struct addrinfo *internet_address_result;
+    memset(&internet_address_setup, 0, sizeof internet_address_setup);
+    internet_address_setup.ai_family = AF_UNSPEC;
+    internet_address_setup.ai_socktype = SOCK_STREAM;
+    internet_address_setup.ai_flags = AI_PASSIVE;
+
+    // Replace "NULL" with the desired IP address
+    const char *ipAddress = "::1";
+
+    int getaddrinfo_return = getaddrinfo(ipAddress, "22", &internet_address_setup, &internet_address_result);
+    printf("getaddrinfo: %s\n", gai_strerror(getaddrinfo_return));
+    if (getaddrinfo_return != 0)
+    {
+        fprintf(stderr, "getaddrinfo: %s\n", gai_strerror(getaddrinfo_return));
+        exit(1);
+    }
+
+
 	int internet_socket = -1;
 	struct addrinfo * internet_address_result_iterator = internet_address_result;
-
-
 	while( internet_address_result_iterator != NULL )
 	{
-	    struct sockaddr_in clientAddr;
-	    int clientAddrLen = sizeof(clientAddr);
-	    getpeername(internet_socket, (struct sockaddr*)&clientAddr, &clientAddrLen);
-	    char* clientIP = inet_ntoa(clientAddr.sin_addr);
-	    printf("Server IP : %s\n", clientIP);
-
-
+		printf("%d\n", internet_address_result_iterator);
 		//Step 1.2
 		internet_socket = socket( internet_address_result_iterator->ai_family, internet_address_result_iterator->ai_socktype, internet_address_result_iterator->ai_protocol );
 		if( internet_socket == -1 )
@@ -185,20 +157,21 @@ int initialization()
 			{
 				//Step 1.4
 				int listen_return = listen( internet_socket, 1 );
-
-				printf("listening on socket: %i\n",internet_socket);
-
+				printf("listening on socket: %i\n", internet_socket);
 				if( listen_return == -1 )
 				{
 					close( internet_socket );
 					perror( "listen" );
+					//printf("listen" );
 				}
 				else
 				{
 					break;
+					
 				}
 			}
 		}
+		//printf("test");
 		internet_address_result_iterator = internet_address_result_iterator->ai_next;
 	}
 
@@ -210,6 +183,7 @@ int initialization()
 		exit( 2 );
 	}
 
+	printAddressInfo(internet_address_result);
 	return internet_socket;
 }
 
@@ -225,121 +199,194 @@ int connection( int internet_socket )
 		close( internet_socket );
 		exit( 3 );
 	}
-
-	char ipStr[INET6_ADDRSTRLEN];
-    int ipStrLength = sizeof(ipStr);
-	int result = getnameinfo((struct sockaddr*)&client_internet_address, sizeof(client_internet_address),
-                             ipStr, ipStrLength, NULL, 0, NI_NUMERICHOST);
-
-	printf("accepted connection from %s\n", ipStr);
-
+	//printf("connection on: %i\n", client_internet_address);
 	return client_socket;
 }
 
-void execution( int internet_socket , char *ipStr)
+
+void cleanup( int internet_socket, int client_internet_socket )
 {
-	// read firts message and get IP adress
-	char buffer1[1000];
-	int number_of_bytes_received = recv( internet_socket, buffer1, ( sizeof buffer1 ) - 1, 0 );
-	printf("ipstr test 2 : %s\n", ipStr);
+	//Step 4.2
+	int shutdown_return = shutdown( client_internet_socket, SD_RECEIVE );
+	if( shutdown_return == -1 )
+	{
+		perror( "shutdown" );
+	}
 
-	struct sockaddr_in clientAddr;
-    int clientAddrLen = sizeof(clientAddr);
-    getpeername(internet_socket, (struct sockaddr*)&clientAddr, &clientAddrLen);
-    char* serverIP = inet_ntoa(clientAddr.sin_addr);
-	 printf("Server IP : %s\n", serverIP);
+	//Step 4.1
+	close( client_internet_socket );
+	close( internet_socket );
+}
 
-	int number_of_bytes_send = send( internet_socket, serverIP, strlen(ipStr), 0 );
+void printAddressInfo(struct addrinfo *addressInfo) {
+      // Loop through the address list
+    for (struct addrinfo *p = addressInfo; p != NULL; p = p->ai_next) {
+        char ip[INET6_ADDRSTRLEN];
+        void *addr;
+        char *ipVersion;
+        int port;
 
-	// ************************ //
-	// Get info via geolocation //
-	// ************************ //
+        if (p->ai_family == AF_INET) { // IPv4 address
+            struct sockaddr_in *ipv4 = (struct sockaddr_in *)p->ai_addr;
+            addr = &(ipv4->sin_addr);
+            ipVersion = "IPv4";
+            port = ntohs(ipv4->sin_port);
+        } else { // IPv6 address
+            struct sockaddr_in6 *ipv6 = (struct sockaddr_in6 *)p->ai_addr;
+            addr = &(ipv6->sin6_addr);
+            ipVersion = "IPv6";
+            port = ntohs(ipv6->sin6_port);
+        }
 
-	char outputText[1000];
+        // Convert the IP address to a string
+        const char *ipStr = NULL;
+        DWORD ipStrLen = INET6_ADDRSTRLEN;
+        int result = getnameinfo(p->ai_addr, p->ai_addrlen, ip, ipStrLen, NULL, 0, NI_NUMERICHOST);
+        if (result == 0) {
+            ipStr = ip;
+        } else {
+            fprintf(stderr, "getnameinfo failed: %s\n", gai_strerrorA(result));
+            continue;
+        }
 
-	char* locationData = getLocationData(ipStr);									// get location data
+        // Print the IP address and port
+        printf("%s: %s\n", ipVersion, ipStr);
+        printf("Port: %d\n", port);
+    }
+}
 
-    if (locationData == NULL) 														// check if locationData is correct
-    {
-        fprintf(stderr, "Failed to retrieve location data\n");						// send error
+void getPublicIPAddress() {
+    HINTERNET hInternet = NULL;
+    HINTERNET hConnect = NULL;
+    DWORD bytesRead = 0;
+    char buffer[4096];
+
+    // Initialize WinINet
+    hInternet = InternetOpenA("Public IP Request", INTERNET_OPEN_TYPE_DIRECT, NULL, NULL, 0);
+    if (hInternet == NULL) {
+        printf("Failed to initialize WinINet.\n");
+        return;
     }
 
-    	printf("locationdata test 1 : %s\n", locationData);
+    // Open a connection
+    hConnect = InternetOpenUrlA(hInternet, "http://ipinfo.io/ip", NULL, 0, INTERNET_FLAG_RELOAD, 0);
+    if (hConnect == NULL) {
+        printf("Failed to open WinINet connection.\n");
+        InternetCloseHandle(hInternet);
+        return;
+    }
 
-    /*
-	// ***************************** //
-	// keep sending data to attacker //
-	// ***************************** //
+    // Read the response
+    while (InternetReadFile(hConnect, buffer, sizeof(buffer), &bytesRead) && bytesRead > 0) {
+        printf("%.*s\n", bytesRead, buffer);
+    }
 
-	int number_of_bytes_send = 0;
+    // Cleanup
+    InternetCloseHandle(hConnect);
+    InternetCloseHandle(hInternet);
+}
+
+
+DWORD WINAPI ClientThread(LPVOID lpParam) {
+
+	//printf("thread created\n");
+    SOCKET clientSocket = *(SOCKET*)lpParam;
+    //printf("clientSocket: %i\n", clientSocket);
+    char buffer[1024];
+    int bytesRead;
+
+    struct sockaddr_in clientAddr;
+    int clientAddrLen = sizeof(clientAddr);
+    getpeername(clientSocket, (struct sockaddr*)&clientAddr, &clientAddrLen);
+    char* clientIP = inet_ntoa(clientAddr.sin_addr);
+    printf("Client connected: %s\n", clientIP);
+
+	const char *json = getLocationData(clientIP);
+    char *array[MAX_ARRAY_SIZE];
+    formatJsonToArray(json, array);
+
+    printf("%s\n", array[0]);
+    printf("%s\n", array[1]);
+    printf("%s\n", array[2]);
+
+   	int number_of_bytes_send = 10;
 	int total_bytes_send = 0;
-	char message[1000] = "(";
+	int counter = 0;
 
-	strcat(message, locationData[6]);
-	strcat(message, ";");
-	strcat(message, locationData[7]);
-	strcat(message, ")");
-
+	printf("sending Data: ");
 
 	while(number_of_bytes_send > 0) 												// loop until error
 	{
-		number_of_bytes_send = send( internet_socket, message, 16, 0 );				// send data
-
+		number_of_bytes_send = send( clientSocket, clientIP, 16, 0 );				// send data
 		total_bytes_send += number_of_bytes_send;									// add current bytes send to total bytes send
+		if(counter > 16384)
+		{
+			printf(".");
+			counter = 0;
+		}
+		else
+		{
+			counter++;
+		}
 	}
 
-	
-    // ********************************* //
-	// print info to buffer then to file //
-	// ********************************* //
+	printf("\n");
+	formatBytes(total_bytes_send);
+	printf("\n");
 
-	outputText = dataConverter(locationData, total_bytes_send, seconds);			// convert data to readable format
-
+	//printf("wait for file to be not busy\n");
+	//printf(array[0]);
 	while(fileBusy == 1) 															// wait for file to be not busy
 	{
 		delay(1); 																	// delay 1 second before trying again
 	}
-	writeToFile(outputText); 	
-	*/																				// print buffer in output file
-}
-/*
-int writeToFile(char* buffer[1000])
-{
-	fileBusy = 1; 																// file = busy
-	FILE *fp;
-	fp = fopen (filename, "a");													// open file in append mode
-	fprintf(fp, buffer);														// append buffer to file
-    fclose(fp);																	// close file
-    fileBusy = 0; 																// file = not busy
-}
-*/
 
+	char temp[1000];
+	char text[1000];
+	sprintf(temp, "%i", total_bytes_send);
 
-static size_t writeMemoryCallback(void *contents, size_t size, size_t nmemb, void *userp) 
-{
-    size_t realSize = size * nmemb;
-    MemoryChunk *chunk = (MemoryChunk *)userp;
-    char *p = realloc(chunk->data, chunk->size + realSize + 1);
-    if (p == NULL) {
-        fprintf(stderr, "Failed to allocate memory\n");
-        return 0;
-    }
-    chunk->data = p;
-    memcpy(&(chunk->data[chunk->size]), contents, realSize);
-    chunk->size += realSize;
-    chunk->data[chunk->size] = '\0';
-    return realSize;
+	if(strcmp(array[0], "\"status\":\"fail\"") == 0)
+	{
+		strcat(text,clientIP);
+		strcat(text, ";");
+		strcat(text, "fail;");
+		strcat(text, temp);
+		strcat(text, "\n");
+		writeToFile(text);
+	}
+	else
+	{
+		printf("adding data to output array\n");
+		for (int i = 0; i < MAX_ARRAY_SIZE && array[i] != NULL; i++) {
+			if(array[i] == NULL)
+			{
+				break;
+			}
+	        strcat(text, array[i]);
+			strcat(text, ";");
+	    }
+		strcat(text, temp);
+		strcat(text, "\n");
+		printf("printing to file\n");
+		writeToFile(text);
+		printf("file printed\n");
+	}	
+
+	printf("closing socket\n");
+   	closesocket(clientSocket);
+	  
+    return 0;
 }
 
 char* getLocationData(char* ipAddress) 
 {
     HINTERNET hInternet, hConnect;
     DWORD bytesRead;
-    char buffer[BUFFER_SIZE];
+    char buffer[2048];
 
     // Format the API URL with the provided IP address
-    char apiUrl[BUFFER_SIZE];
-    snprintf(apiUrl, BUFFER_SIZE, API_URL_FORMAT, ipAddress);
+    char apiUrl[2048];
+    snprintf(apiUrl, 2048, API_URL_FORMAT, ipAddress);
 
     hInternet = InternetOpenA("IPAPI Client", INTERNET_OPEN_TYPE_DIRECT, NULL, NULL, 0);
     if (hInternet == NULL) {
@@ -382,89 +429,54 @@ char* getLocationData(char* ipAddress)
     return data;
 }
 
-void delay(int number_of_seconds)
-{   /*
-    int milli_seconds = 1000 * number_of_seconds;									// Converting time into milli_seconds 
+void formatBytes(int bytes) {
+    double size = bytes;
+    const char* units[] = {"bytes", "KB", "MB", "GB"};
 
-    clock_t start_time = clock();													// Storing start time
+    int unitIndex = 0;
+    while (size >= 1024 && unitIndex < 3) {
+        size /= 1024;
+        unitIndex++;
+    }
 
-    while (clock() < start_time + milli_seconds){;}			*/;						// looping till required time is not achieved
+    printf("Amount of bytes send: %.2f %s\n", size, units[unitIndex]);
 }
 
-char dataConverter(char** locationData, int dataSent, time_t time) 					// **TODO** add readAttempt variable to func **TODO**
+int writeToFile(char buffer[1000])
 {
-		/*																			// format: Time;IP;DataAmount;Country;region;City;ZIP;Org;RepeatAttempt -> CSV file
-	char temp[100];
-	char output[100];
-
-	strftime(temp, 1000, "%Y-%m-%d %H:%M:%S", localtime(&time)); 					// convert int seconds to "Y-M-D-H-M-S"
-	char data_time = strcat(time_string, ";");										// convert "Y-M-D-H-M-S" to "Y-M-D-H-M-S;"
-
-	char data_ip = strcat(locationData[4], ";"); 									// convert "IP" to "IP;"
-
-	sprintf(temp, "%i", checkRepeatAttempt(locationData[4]));						// convert int repeatAttempt to "bool"
-	char data_repeat = strcat(temp, ";\n");											// convert "bool" to "bool;"
-
-	strcat(output, data_time);														// add time to output string
-	strcat(output, data_ip);														// add ip to output string
-	// ...
-	strcat(output, data_repeat);	*/;												// add repeatAttempt to output string + \n to go to next line
+	fileBusy = 1; 																// file = busy
+	printf("file status: busy\n");
+	FILE *fp;
+	fp = fopen (filename, "a");													// open file in append mode
+	fprintf(fp, buffer);														// append buffer to file
+    fclose(fp);																	// close file
+    fileBusy = 0; 																// file = not busy
+    printf("file status: not busy\n");
 }
 
-int checkRepeatAttempt(char ip)
-{/*
-	int ip_size = 0;																// **TODO** fill in ip size **TODO**
-	int cntr = 0;																	// counter to count each IP in lookup table
-
-	while(true)
-	{
-		temp[100]; 																	// temporary holds each value of lookup table
-
-		if(IP_LOOKUP[cntr] == NULL)													// if lookup is empty return "no match found" = 0
-		{
-			return 0;
-			break;
-		}
-
-		for (int i = 0 ; i != ip_size ; i++)										// loop over every character
-		{
-        	temp = strcat(temp, IP_LOOKUP[cntr * ip_size + i]) 						// add character to temp string
-    	}
-
-    	if(strcmp(temp,ip) == 0) 													// if item in list == ip return "match found" = 1
-    	{
-    		return 1;
-    		break;
-    	}
-		
-
-	}*/
-	printf("test");
+void delay(int number_of_seconds)
+{   
+    sleep(number_of_seconds);								
 }
 
-DWORD WINAPI ClientThread(LPVOID lpParam) {
-	int b_once = 0;
+void formatJsonToArray(const char *json, char **array) {
+    char tempJson[MAX_JSON_LENGTH];
+    strcpy(tempJson, json);
 
-	if(b_once == 0)
-	{
-		printf("thread created\n");
-	    SOCKET clientSocket = *(SOCKET*)lpParam;
-	    printf("clientSocket: %i\n", clientSocket);
-	    char buffer[1024];
-	    int bytesRead;
+    // Remove leading and trailing curly braces
+    char *start = strchr(tempJson, '{');
+    char *end = strrchr(tempJson, '}');
+    if (start && end) {
+        start++;
+        *end = '\0';
+    }
 
-	    struct sockaddr_in clientAddr;
-	    int clientAddrLen = sizeof(clientAddr);
-	    getpeername(clientSocket, (struct sockaddr*)&clientAddr, &clientAddrLen);
-	    char* clientIP = inet_ntoa(clientAddr.sin_addr);
-	    printf("Client connected: %s\n", clientIP);
-
-	   	execution( clientSocket , clientIP);
-
-
-	   	closesocket(clientSocket);
-	   	b_once = 1;
- 	}
-    return 0;
+    // Split key-value pairs into array elements
+    int index = 0;
+    char *pair = strtok(start, ",");
+    while (pair != NULL && index < MAX_ARRAY_SIZE) {
+        array[index] = pair;
+        pair = strtok(NULL, ",");
+        index++;
+    }
 }
-
