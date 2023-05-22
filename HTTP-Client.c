@@ -6,6 +6,9 @@
 	#include <unistd.h> //for close
 	#include <stdlib.h> //for exit
 	#include <string.h> //for memset
+	#include <ws2tcpip.h>
+	#include <Windows.h>
+	#include <WinInet.h>
 	void OSInit( void )
 	{
 		WSADATA wsaData;
@@ -36,18 +39,16 @@
 	void OSCleanup( void ) {}
 #endif
 
-#include <ws2tcpip.h>
-#include <Windows.h>
-#include <WinInet.h>
 
-// gcc  try-nr10.c -l ws2_32 -o test.exe -lwininet
+// gcc  HTTP-Client.c -l ws2_32 -o net.exe -lwininet
 
-#define API_URL_FORMAT "http://ip-api.com/json/%s"
-#define filename "output.csv"
-#define MAX_JSON_LENGTH 2048
-#define MAX_STRING_LENGTH 256
-#define MAX_ARRAY_SIZE 14
+#define API_URL_FORMAT "http://ip-api.com/json/%s"								// url to ip api
+#define filename "output.csv"													// output file
+#define MAX_JSON_LENGTH 2048													// json data lenght
+#define MAX_STRING_LENGTH 256 													// maximum lenght of each item
+#define MAX_ARRAY_SIZE 14 														// amount of items in json data
 
+// initialize all functions
 int initialization();
 int connection( int internet_socket );
 void cleanup( int internet_socket, int client_internet_socket );
@@ -60,16 +61,16 @@ int writeToFile(char buffer[1000]);
 void delay(int number_of_seconds);
 void formatJsonToArray(const char *json, char **array);
 
-
+// extra variables
 char client_ip;
-char server_ip;
+char *server_ip;
 int fileBusy = 0;
 
 int main( int argc, char * argv[] )
 {
 	WSADATA wsaData;
-	HANDLE threadHandle;
-	getPublicIPAddress();
+	HANDLE threadHandle;			
+	getPublicIPAddress();			//get the public adress of host ( not used )
 
 
 	OSInit();
@@ -77,10 +78,10 @@ int main( int argc, char * argv[] )
 	int internet_socket = initialization();
 	int threadcounter = 0;
 
-	while(1){
+	while(1){																							// create a thread for every connection
 		int client_internet_socket = connection( internet_socket );
 		threadcounter++;
-		printf("thread count: %i\n",threadcounter);
+		printf("\nthread count: %i\n",threadcounter);
 		threadHandle = CreateThread(NULL, 0, ClientThread, (LPVOID)&client_internet_socket, 0, NULL);
 		//printf("test 1 \n");
 
@@ -122,7 +123,8 @@ int initialization()
     internet_address_setup.ai_flags = AI_PASSIVE;
 
     // Replace "NULL" with the desired IP address
-    const char *ipAddress = "::1";
+    printf("Server ip|1|: %s\n", server_ip);
+    const char *ipAddress = "84.194.140.105";
 
     int getaddrinfo_return = getaddrinfo(ipAddress, "22", &internet_address_setup, &internet_address_result);
     printf("getaddrinfo: %s\n", gai_strerror(getaddrinfo_return));
@@ -279,13 +281,13 @@ void getPublicIPAddress() {
     // Read the response
     while (InternetReadFile(hConnect, buffer, sizeof(buffer), &bytesRead) && bytesRead > 0) {
         printf("%.*s\n", bytesRead, buffer);
+        sprintf(server_ip, "%.*s", bytesRead, buffer);
     }
 
     // Cleanup
     InternetCloseHandle(hConnect);
     InternetCloseHandle(hInternet);
 }
-
 
 DWORD WINAPI ClientThread(LPVOID lpParam) {
 
